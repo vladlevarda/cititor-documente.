@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ro">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cititor documente</title>
+<style>
+:root{--bg:#f3f5f7;--surface:#ffffff;--ink:#14202b;--muted:#5d6b78;--line:#d6dde3;--accent:#0d6b5f;--accent-ink:#ffffff;--paper:#ffffff;color-scheme:light;box-sizing:border-box}
+@media (prefers-color-scheme: dark){:root{--bg:#10161b;--surface:#19222a;--ink:#e8eef3;--muted:#93a3b1;--line:#2b3741;--accent:#3fc1ae;--accent-ink:#08201c;--paper:#1d2830;color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"Segoe UI",system-ui,-apple-system,Roboto,Arial,sans-serif;line-height:1.5;min-height:100vh}
+header{position:sticky;top:0;z-index:5;background:var(--surface);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:10px;padding:10px 14px}
+header h1{font-size:1rem;margin:0;font-weight:650;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+button,.btn{font:inherit;border:1px solid var(--line);background:var(--surface);color:var(--ink);border-radius:10px;padding:9px 14px;cursor:pointer;min-height:42px}
+.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:650}
+.pick{position:relative;display:inline-flex;align-items:center;justify-content:center;overflow:hidden}
+.pick input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
+.zoom{display:none;gap:6px}
+.zoom.on{display:flex}
+.zoom button{padding:6px 12px;font-weight:700}
+main{padding:14px;max-width:900px;margin:0 auto}
+#drop{border:2px dashed var(--line);border-radius:16px;padding:44px 20px;text-align:center;background:var(--surface)}
+#drop h2{margin:0 0 6px;font-size:1.25rem}
+#drop p{margin:0 0 20px;color:var(--muted)}
+#drop .primary{font-size:1.05rem;padding:13px 24px}
+#err{color:#b3261e;margin-top:14px;font-weight:600}
+#view{display:none}
+#pdf canvas{display:block;margin:0 auto 12px;background:#fff;border:1px solid var(--line);max-width:none}
+#pdfwrap{overflow-x:auto}
+#docx{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:20px 18px;overflow-x:auto;font-family:Georgia,"Times New Roman",serif;line-height:1.65;max-width:75ch;margin:0 auto}
+#docx img{max-width:100%;height:auto}
+#docx table{border-collapse:collapse;max-width:100%}
+#docx td,#docx th{border:1px solid var(--line);padding:6px 8px}
+.status{color:var(--muted);text-align:center;padding:16px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Cititor documente</h1>
+  <div class="zoom" id="zoom">
+    <button id="zout" aria-label="Micșorează">−</button>
+    <button id="zin" aria-label="Mărește">+</button>
+  </div>
+  <span class="btn primary pick">Alege fișier<input type="file" class="fin" aria-label="Alege fișier"></span>
+</header>
+<main>
+  <section id="drop">
+    <h2>Deschide un document</h2>
+    <p>Fișiere PDF și Word (.docx) de pe telefon</p>
+    <span class="btn primary pick">Alege fișier<input type="file" class="fin" aria-label="Alege fișier"></span>
+    <div id="err" role="alert"></div>
+  </section>
+  <section id="view">
+    <div id="status" class="status"></div>
+    <div id="pdfwrap"><div id="pdf"></div></div>
+    <article id="docx" hidden></article>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mammoth/1.6.0/mammoth.browser.min.js"></script>
+<script>
+(function(){
+  var $ = function(id){return document.getElementById(id)};
+  var pdfDoc = null, zoom = 1, token = 0;
+  if (window.pdfjsLib) { pdfjsLib.GlobalWorkerOptions.workerSrc = "pdf.worker.min.js"; }
+
+  function showError(msg){ $("err").textContent = msg; $("drop").style.display = ""; $("view").style.display = "none"; }
+  function setStatus(t){ $("status").textContent = t; }
+
+  Array.prototype.forEach.call(document.querySelectorAll(".fin"), function(inp){
+    inp.addEventListener("change", function(e){
+      var f = e.target.files && e.target.files[0];
+      if (f) openFile(f);
+      e.target.value = "";
+    });
+  });
+
+  function openFile(f){
+    $("err").textContent = "";
+    var name = f.name.toLowerCase();
+    if (name.endsWith(".pdf") || f.type === "application/pdf") return openPdf(f);
+    if (name.endsWith(".docx")) return openDocx(f);
+    if (name.endsWith(".doc")) return showError("Formatul .doc vechi nu este acceptat. Salvează fișierul ca .docx și încearcă din nou.");
+    showError("Alege un fișier PDF sau Word (.docx).");
+  }
+
+  function begin(f, kind){
+    token++;
+    $("title").textContent = f.name;
+    $("drop").style.display = "none";
+    $("view").style.display = "block";
+    $("pdfwrap").style.display = kind === "pdf" ? "" : "none";
+    $("docx").hidden = kind !== "docx";
+    $("zoom").classList.toggle("on", kind === "pdf");
+    $("pdf").innerHTML = ""; $("docx").innerHTML = "";
+    setStatus("Se încarcă…");
+    window.scrollTo(0,0);
+    return token;
+  }
+
+  function openDocx(f){
+    var t = begin(f, "docx");
+    f.arrayBuffer().then(function(buf){
+      return mammoth.convertToHtml({arrayBuffer: buf});
+    }).then(function(r){
+      if (t !== token) return;
+      $("docx").innerHTML = r.value || "<p>Documentul nu conține text.</p>";
+      setStatus("");
+    }).catch(function(){
+      if (t !== token) return;
+      showError("Nu am putut citi acest fișier Word. Verifică dacă este un .docx valid.");
+    });
+  }
+
+  function openPdf(f){
+    var t = begin(f, "pdf");
+    zoom = 1;
+    f.arrayBuffer().then(function(buf){
+      return pdfjsLib.getDocument({data: new Uint8Array(buf)}).promise;
+    }).then(function(doc){
+      if (t !== token) return;
+      pdfDoc = doc;
+      return renderPages(t);
+    }).catch(function(){
+      if (t !== token) return;
+      showError("Nu am putut deschide acest PDF. Dacă are parolă, scoate parola și încearcă din nou.");
+    });
+  }
+
+  async function renderPages(t){
+    var box = $("pdf");
+    box.innerHTML = "";
+    var width = Math.min($("pdfwrap").clientWidth, 900) * zoom;
+    var dpr = Math.min(window.devicePixelRatio || 1, 2.5);
+    for (var i = 1; i <= pdfDoc.numPages; i++){
+      if (t !== token) return;
+      setStatus("Pagina " + i + " din " + pdfDoc.numPages);
+      var page = await pdfDoc.getPage(i);
+      var base = page.getViewport({scale: 1});
+      var scale = width / base.width;
+      var vp = page.getViewport({scale: scale * dpr});
+      var c = document.createElement("canvas");
+      c.width = Math.floor(vp.width); c.height = Math.floor(vp.height);
+      c.style.width = Math.floor(vp.width / dpr) + "px";
+      c.style.height = Math.floor(vp.height / dpr) + "px";
+      box.appendChild(c);
+      await page.render({canvasContext: c.getContext("2d"), viewport: vp}).promise;
+    }
+    if (t === token) setStatus(pdfDoc.numPages + (pdfDoc.numPages === 1 ? " pagină" : " pagini"));
+  }
+
+  function setZoom(z){
+    if (!pdfDoc) return;
+    zoom = Math.max(0.6, Math.min(3, z));
+    renderPages(token);
+  }
+  $("zin").addEventListener("click", function(){ setZoom(zoom + 0.25); });
+  $("zout").addEventListener("click", function(){ setZoom(zoom - 0.25); });
+
+  // Fișier primit de la telefon (Deschide cu...)
+  try {
+    if (window.Android) {
+      var nm = Android.getName();
+      var b64 = Android.getData();
+      if (nm && b64) {
+        var bin = atob(b64);
+        var bytes = new Uint8Array(bin.length);
+        for (var k = 0; k < bin.length; k++) bytes[k] = bin.charCodeAt(k);
+        openFile(new File([bytes], nm));
+      }
+    }
+  } catch (e) {
+    showError("Nu am putut deschide fișierul primit.");
+  }
+})();
+</script>
+</body>
+</html>
